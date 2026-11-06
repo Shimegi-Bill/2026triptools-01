@@ -1,8 +1,11 @@
-# 嵯峨野小火車 有位通知：每 5 分鐘起一次、入面每 1 分鐘睇 11/29–12/1 有冇 2 個位或以上，有就推 ntfy 去手機
+# 嵯峨野小火車 有位通知：每 1 分鐘睇 11/29–12/1 有冇 2 個位或以上，有就推 ntfy 去手機
 # 腳本：sagano/sagano_watch.py
 # 要設：Settings → Secrets and variables → Actions → New repository secret → NTFY_TOPIC
-# 注意：排程只喺 main 分支行；GitHub 有時會遲 5–20 分鐘先行
-# 12/1 之後會自動唔再查，到時可以喺 Actions 頁撳「Disable workflow」或者刪走呢個檔
+#
+# 點樣一直跑：每次執行連續查大約 25 分鐘，完咗自己觸發下一次（自己叫醒自己）。
+#   GitHub 排程（cron）新 repo 成日唔郁，所以只係留做後備：個循環斷咗，排程一郁就會接返。
+#   concurrency 保證同一時間最多 1 個執行緊、1 個排隊，唔會越叫越多。
+# 想停：Actions 頁撳「Disable workflow」。12/1 之後會自動唔再叫醒自己。
 name: 小火車有位通知
 
 on:
@@ -18,6 +21,7 @@ on:
 
 permissions:
   contents: read   # 唔使 commit 返 repo，狀態放 cache
+  actions: write   # 要觸發下一次執行
 
 concurrency:
   group: sagano-watch
@@ -26,7 +30,7 @@ concurrency:
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
@@ -42,7 +46,7 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           DATES: '2026-11-29,2026-11-30,2026-12-01'
           MIN_SEATS: '2'
-          LOOP_SECONDS: '250'      # 每次執行連續查大約 4 分鐘
+          LOOP_SECONDS: '1500'     # 每次執行連續查大約 25 分鐘
           INTERVAL_SECONDS: '60'   # 每 1 分鐘查一次
           FORCE_TEST: ${{ inputs.test && '1' || '0' }}
         run: python3 sagano/sagano_watch.py
@@ -53,3 +57,17 @@ jobs:
         with:
           path: sagano_state.json
           key: sagano-state-${{ github.run_id }}
+
+      - name: 叫醒下一次
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$(TZ=Asia/Tokyo date +%F)" > "2026-12-01" ]]; then
+            echo "12/1 已經過咗，唔再叫醒"; exit 0
+          fi
+          for i in 1 2 3; do
+            gh workflow run sagano-watch.yml --repo "$GITHUB_REPOSITORY" --ref main && exit 0
+            echo "觸發失敗，10 秒後再試（$i/3）"; sleep 10
+          done
+          exit 1
