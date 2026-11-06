@@ -1,0 +1,52 @@
+# 嵯峨野小火車 有位通知：每 10 分鐘睇 11/29–12/1 有冇 2 個位或以上，有就推 ntfy 去手機
+# 腳本：sagano/sagano_watch.py
+# 要設：Settings → Secrets and variables → Actions → New repository secret → NTFY_TOPIC
+# 注意：排程只喺 main 分支行；GitHub 有時會遲 5–20 分鐘先行
+# 12/1 之後會自動唔再查，到時可以喺 Actions 頁撳「Disable workflow」或者刪走呢個檔
+name: 小火車有位通知
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+    inputs:
+      test:
+        description: '推一個測試通知（確認手機收到）'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read   # 唔使 commit 返 repo，狀態放 cache
+
+concurrency:
+  group: sagano-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 讀返上次結果
+        uses: actions/cache/restore@v4
+        with:
+          path: sagano_state.json
+          key: sagano-state-${{ github.run_id }}
+          restore-keys: sagano-state-
+
+      - name: 查位
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          DATES: '2026-11-29,2026-11-30,2026-12-01'
+          MIN_SEATS: '2'
+          FORCE_TEST: ${{ inputs.test && '1' || '0' }}
+        run: python3 sagano/sagano_watch.py
+
+      - name: 記低今次結果
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: sagano_state.json
+          key: sagano-state-${{ github.run_id }}
