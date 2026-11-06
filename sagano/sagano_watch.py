@@ -2,7 +2,7 @@
 """嵯峨野小火車 有位通知（GitHub Actions 用）
 
 做咩：讀 Triplabo（LINKTIVITY）嘅公開日曆 API，睇指定日子、指定方向仲有幾多位。
-      位數 >= MIN_SEATS 而且同上次唔同，就用 ntfy 推送通知去手機。
+      位數 >= MIN_SEATS 就用 ntfy 推送最高優先級（urgent）通知，有位期間一直重複，冇咗位再通知一次。
 限制：API 只係出「成日、每個方向」嘅剩餘位數，冇班次時間同座位號；
       時間（去程 3 點後、回程 2 點前）同係咪連位，要收到通知之後自己入網站揀。
 只用 Python 標準庫，唔使 pip install。
@@ -74,7 +74,7 @@ def notify(topic, title, body, priority="high"):
             # HTTP header 唔收得中文，用 RFC 2047 包住標題
             "Title": "=?UTF-8?B?" + base64.b64encode(title.encode()).decode() + "?=",
             "Priority": priority,
-            "Tags": "train",
+            "Tags": "train,rotating_light" if priority == "urgent" else "train",
             "Click": BOOK_URL,
         },
         method="POST",
@@ -119,22 +119,42 @@ def main():
         time.sleep(interval)
 
 
-def check_once(topic, dates, min_seats, prev, force_test):
+REPEAT_FAST = 10   # 有位嘅頭 10 次：每次查都響（大約每 1 分鐘）
+REPEAT_SLOW = 10   # 之後：每 10 次先響一次（大約每 10 分鐘），唔好成晚嘈
+
+
+def check_once(topic, dates, min_seats, state, force_test):
+    """state = {"seats": {key: 位數}, "alerts": {key: 有位之後響咗幾次}}"""
+    if "seats" not in state:  # 舊格式（直接係位數）
+        state = {"seats": state, "alerts": {}}
+    alerts = dict(state.get("alerts", {}))
     now = seats_by_date_plan(fetch_calendar(), dates)
     stamp = datetime.now(JST).strftime("%m/%d %H:%M:%S")
     print(f"{stamp} JST  " + "  ".join(f"{k[5:10]}{'去' if k.endswith('1') else '回'}:{now[k]}" for k in sorted(now)))
 
-    # 只喺「啱啱夠位」或者「位數有變而仍然夠位」先通知，唔會每次都重複煩你
-    hits = [k for k in sorted(now) if now[k] >= min_seats and now[k] != prev.get(k)]
-    if hits:
-        lines = [f"{k.split('|')[0][5:].replace('-', '/')} {PLANS[k.split('|')[1]]}：剩 {now[k]} 位" for k in hits]
-        lines.append("⚠️ 位數係成日計，入去睇班次時間同揀連位（例如 1A+1B）")
-        notify(topic, "小火車有位！快啲訂", "\n".join(lines))
-        print("已通知：", hits)
+    # 有位就一直響，直到冇位為止：頭 10 次每分鐘響，之後每 10 分鐘響
+    ring = []
+    for k in sorted(now):
+        if now[k] >= min_seats:
+            n = alerts.get(k, 0)
+            if n < REPEAT_FAST or (n - REPEAT_FAST) % REPEAT_SLOW == REPEAT_SLOW - 1:
+                ring.append(k)
+            alerts[k] = n + 1
+        elif alerts.pop(k, 0):
+            notify(topic, "小火車：啱啱個位冇咗",
+                   f"{k[5:10].replace('-', '/')} {PLANS[k.split('|')[1]]}：而家剩 {now[k]} 位，繼續幫你睇住", "default")
+            print("已通知冇位：", k)
+
+    if ring:
+        lines = [f"{k.split('|')[0][5:].replace('-', '/')} {PLANS[k.split('|')[1]]}：剩 {now[k]} 位" for k in ring]
+        lines.append("⚠️ 時間啱就即刻訂住先（之後可以改座位換連位），乘車前一日取消免費")
+        notify(topic, "🚨 小火車有位！快啲訂", "\n".join(lines), "urgent")
+        print("已通知（urgent）：", ring)
     elif force_test:
-        notify(topic, "小火車監察測試", f"{stamp} 測試正常。而家：" + "，".join(f"{k[5:10]} {k[-1]}號方案 {v}位" for k, v in sorted(now.items())), "default")
+        notify(topic, "小火車監察測試", f"{stamp} 測試正常。而家：" + "，".join(f"{k[5:10]} {k[-1]}號方案 {v}位" for k, v in sorted(now.items())), "urgent")
         print("已推測試通知")
-    return now
+    return {"seats": now, "alerts": alerts}
+
 
 if __name__ == "__main__":
     main()
