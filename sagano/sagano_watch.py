@@ -12,12 +12,15 @@
   DATES        要睇嘅日子，逗號分隔，例如 2026-11-29,2026-11-30,2026-12-01
   MIN_SEATS    最少幾多個位先通知（預設 2）
   STATE_FILE   記住上次結果嘅檔案（預設 sagano_state.json）
+  LOOP_SECONDS 一次執行入面連續查幾多秒（預設 0 = 查一次）
+  INTERVAL_SECONDS 每次查相隔幾多秒（預設 60）
   FORCE_TEST   設做 1 就無論有冇位都推一個測試通知
 """
 import base64
 import json
 import os
 import sys
+import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
@@ -98,11 +101,28 @@ def main():
     except (OSError, ValueError):
         prev = {}
 
+    # 一次 GitHub 執行入面重複查幾次（GitHub 排程最密每 5 分鐘）
+    loop_seconds = int(os.environ.get("LOOP_SECONDS", "0"))
+    interval = int(os.environ.get("INTERVAL_SECONDS", "60"))
+    end_at = time.monotonic() + loop_seconds
+    force_test = os.environ.get("FORCE_TEST") == "1"
+    while True:
+        try:
+            prev = check_once(topic, dates, min_seats, prev, force_test)
+            force_test = False
+            with open(state_file, "w", encoding="utf-8") as f:
+                json.dump(prev, f, ensure_ascii=False)
+        except Exception as e:  # 網站一次答唔到就下次再試，唔好成個停
+            print("今次查唔到：", e)
+        if time.monotonic() + interval > end_at:
+            break
+        time.sleep(interval)
+
+
+def check_once(topic, dates, min_seats, prev, force_test):
     now = seats_by_date_plan(fetch_calendar(), dates)
-    stamp = datetime.now(JST).strftime("%m/%d %H:%M")
-    for key in sorted(now):
-        d, p = key.split("|")
-        print(f"{stamp} JST  {d}  {PLANS[p]}：{now[key]} 位")
+    stamp = datetime.now(JST).strftime("%m/%d %H:%M:%S")
+    print(f"{stamp} JST  " + "  ".join(f"{k[5:10]}{'去' if k.endswith('1') else '回'}:{now[k]}" for k in sorted(now)))
 
     # 只喺「啱啱夠位」或者「位數有變而仍然夠位」先通知，唔會每次都重複煩你
     hits = [k for k in sorted(now) if now[k] >= min_seats and now[k] != prev.get(k)]
@@ -111,13 +131,10 @@ def main():
         lines.append("⚠️ 位數係成日計，入去睇班次時間同揀連位（例如 1A+1B）")
         notify(topic, "小火車有位！快啲訂", "\n".join(lines))
         print("已通知：", hits)
-    elif os.environ.get("FORCE_TEST") == "1":
+    elif force_test:
         notify(topic, "小火車監察測試", f"{stamp} 測試正常。而家：" + "，".join(f"{k[5:10]} {k[-1]}號方案 {v}位" for k, v in sorted(now.items())), "default")
         print("已推測試通知")
-
-    with open(state_file, "w", encoding="utf-8") as f:
-        json.dump(now, f, ensure_ascii=False)
-
+    return now
 
 if __name__ == "__main__":
     main()
