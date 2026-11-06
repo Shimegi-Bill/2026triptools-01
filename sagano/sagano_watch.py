@@ -104,7 +104,7 @@ def main():
         d, p = key.split("|")
         print(f"{stamp} JST  {d}  {PLANS[p]}：{now[key]} 位")
 
-    # 只喺「啱啱夠位」或者「位數有變而仍然夠位」先通知，唔會每 10 分鐘重複煩你
+    # 只喺「啱啱夠位」或者「位數有變而仍然夠位」先通知，唔會每次都重複煩你
     hits = [k for k in sorted(now) if now[k] >= min_seats and now[k] != prev.get(k)]
     if hits:
         lines = [f"{k.split('|')[0][5:].replace('-', '/')} {PLANS[k.split('|')[1]]}：剩 {now[k]} 位" for k in hits]

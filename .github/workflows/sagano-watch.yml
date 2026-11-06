@@ -1,4 +1,4 @@
-# 嵯峨野小火車 有位通知：每 10 分鐘睇 11/29–12/1 有冇 2 個位或以上，有就推 ntfy 去手機
+# 嵯峨野小火車 有位通知：每 5 分鐘睇 11/29–12/1 有冇 2 個位或以上，有就推 ntfy 去手機
 # 腳本：sagano/sagano_watch.py
 # 要設：Settings → Secrets and variables → Actions → New repository secret → NTFY_TOPIC
 # 注意：排程只喺 main 分支行；GitHub 有時會遲 5–20 分鐘先行
@@ -7,7 +7,7 @@ name: 小火車有位通知
 
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
     inputs:
       test:
