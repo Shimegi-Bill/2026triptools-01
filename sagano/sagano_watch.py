@@ -11,6 +11,7 @@
   NTFY_TOPIC   ntfy 主題名（必須，放 GitHub Secret）
   DATES        要睇嘅日子，逗號分隔，例如 2026-11-29,2026-11-30,2026-12-01
   MIN_SEATS    最少幾多個位先通知（預設 2）
+  SPECIAL      個別日子＋方向嘅門檻同提示：日子|方案=位數=提示，用 ; 分隔
   STATE_FILE   記住上次結果嘅檔案（預設 sagano_state.json）
   LOOP_SECONDS 一次執行入面連續查幾多秒（預設 0 = 查一次）
   INTERVAL_SECONDS 每次查相隔幾多秒（預設 60）
@@ -87,7 +88,15 @@ def main():
     if not topic:
         sys.exit("未設 NTFY_TOPIC（GitHub → Settings → Secrets → Actions）")
     dates = [d.strip() for d in os.environ.get("DATES", "2026-11-29,2026-11-30,2026-12-01").split(",") if d.strip()]
-    min_seats = int(os.environ.get("MIN_SEATS", "2"))
+    default_min = int(os.environ.get("MIN_SEATS", "2"))
+    # 個別日子＋方向用唔同門檻，例如 SPECIAL="2026-11-30|SAGANO-YRBTL-2=1=揀 10:30 班次，睇有冇位同你兩個位左右連"
+    special = {}
+    for item in os.environ.get("SPECIAL", "").split(";"):
+        parts = item.strip().split("=", 2)
+        if len(parts) >= 2:
+            special[parts[0].strip()] = (int(parts[1]), parts[2].strip() if len(parts) == 3 else "")
+    min_seats = lambda k: special.get(k, (default_min, ""))[0]
+    note = lambda k: special.get(k, (0, ""))[1]
     state_file = os.environ.get("STATE_FILE", "sagano_state.json")
 
     today = datetime.now(JST).strftime("%Y-%m-%d")
@@ -108,7 +117,7 @@ def main():
     force_test = os.environ.get("FORCE_TEST") == "1"
     while True:
         try:
-            prev = check_once(topic, dates, min_seats, prev, force_test)
+            prev = check_once(topic, dates, min_seats, note, prev, force_test)
             force_test = False
             with open(state_file, "w", encoding="utf-8") as f:
                 json.dump(prev, f, ensure_ascii=False)
@@ -120,34 +129,41 @@ def main():
 
 
 REPEAT_FAST = 10   # 有位嘅頭 10 次：每次查都響（大約每 1 分鐘）
-REPEAT_SLOW = 10   # 之後：每 10 次先響一次（大約每 10 分鐘），唔好成晚嘈
+REPEAT_SLOW = 10   # 之後：每 10 次先響一次（大約每 10 分鐘）
+SLOW_TIMES = 6     # 慢響最多 6 次（大約 1 個鐘）；之後位數有變先再響，唔好成晚嘈
 
 
-def check_once(topic, dates, min_seats, state, force_test):
+def check_once(topic, dates, min_seats, note, state, force_test):
     """state = {"seats": {key: 位數}, "alerts": {key: 有位之後響咗幾次}}"""
     if "seats" not in state:  # 舊格式（直接係位數）
         state = {"seats": state, "alerts": {}}
+    prev_seats = state.get("seats", {})
     alerts = dict(state.get("alerts", {}))
     now = seats_by_date_plan(fetch_calendar(), dates)
     stamp = datetime.now(JST).strftime("%m/%d %H:%M:%S")
     print(f"{stamp} JST  " + "  ".join(f"{k[5:10]}{'去' if k.endswith('1') else '回'}:{now[k]}" for k in sorted(now)))
 
-    # 有位就一直響，直到冇位為止：頭 10 次每分鐘響，之後每 10 分鐘響
     ring = []
     for k in sorted(now):
-        if now[k] >= min_seats:
+        if now[k] >= min_seats(k):
+            if now[k] != prev_seats.get(k):
+                alerts[k] = 0          # 位數有變（例如又有人退票）：重新由快響開始
             n = alerts.get(k, 0)
-            if n < REPEAT_FAST or (n - REPEAT_FAST) % REPEAT_SLOW == REPEAT_SLOW - 1:
+            slow = n - REPEAT_FAST
+            if n < REPEAT_FAST or (0 <= slow < REPEAT_SLOW * SLOW_TIMES and slow % REPEAT_SLOW == REPEAT_SLOW - 1):
                 ring.append(k)
             alerts[k] = n + 1
-        elif alerts.pop(k, 0):
+        elif alerts.pop(k, None) is not None:
             notify(topic, "小火車：啱啱個位冇咗",
                    f"{k[5:10].replace('-', '/')} {PLANS[k.split('|')[1]]}：而家剩 {now[k]} 位，繼續幫你睇住", "default")
             print("已通知冇位：", k)
 
     if ring:
-        lines = [f"{k.split('|')[0][5:].replace('-', '/')} {PLANS[k.split('|')[1]]}：剩 {now[k]} 位" for k in ring]
-        lines.append("⚠️ 時間啱就即刻訂住先（之後可以改座位換連位），乘車前一日取消免費")
+        lines = []
+        for k in ring:
+            line = f"{k.split('|')[0][5:].replace('-', '/')} {PLANS[k.split('|')[1]]}：剩 {now[k]} 位"
+            lines.append(line + (f"\n👉 {note(k)}" if note(k) else ""))
+        lines.append("⚠️ 位數係成日計，入去揀班次先知係咪你要嗰班；乘車前一日取消免費")
         notify(topic, "🚨 小火車有位！快啲訂", "\n".join(lines), "urgent")
         print("已通知（urgent）：", ring)
     elif force_test:
